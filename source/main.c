@@ -19,17 +19,102 @@
  */
 
 /*
- * TheLedsBitmap[0]: Bits: 0..3: Green;
- * TheLedsBitmap[1]: Bits: 0..3: Yellow;
- * TheLedsBitmap[2]: Bits: 0..3: Red;
- * TheLedsBitmap[2]: Bits: 0..3: Red;
+ * Bit 0: South
+ * Bit 1: East
+ * Bit 2: Noth
+ * Bit 3: West
+ *
+ * TheLedsBitmap[0]: Bits: 00..03: Green;
+ * TheLedsBitmap[1]: Bits: 04..07: Yellow;
+ * TheLedsBitmap[2]: Bits: 08..11: Red;
  */
-volatile static uint16_t TheLedsBitmap = 0x5A5AU;
+volatile static uint16_t TheLedsBitmap = 0x0A05;
+
+typedef enum {
+  EStateOff,
+  EState1,
+  EState2,
+  EState3,
+  EState4,
+  EState5,
+  EState6
+} TState;
+
+volatile static uint16_t TheTimer = 1;
+volatile static uint8_t TheState = EStateOff;
+
+static void func(void) {
+  static uint16_t timer = 0;
+  timer--;
+
+  switch (TheState) {
+  case EStateOff:
+    timer = 15000;
+    TheLedsBitmap = 0x050A;
+    TheState = EState1;
+    break;
+  case EState1:
+    if (!timer) {
+      TheState = EState2;
+      timer = 4000;
+    }
+    break;
+  case EState2:
+    if (timer) {
+      if (timer % 800 > 400) {
+        TheLedsBitmap = 0x050A;
+      } else {
+        TheLedsBitmap = 0x0500;
+      }
+    } else {
+      timer = 3000;
+      TheLedsBitmap = 0x05A0;
+      TheState = EState3;
+    }
+    break;
+  case EState3:
+    if (!timer) {
+      timer = 15000;
+      TheLedsBitmap = 0x0A05;
+      TheState = EState4;
+    }
+    break;
+  case EState4:
+    if (!timer) {
+      timer = 4000;
+      TheState = EState5;
+    }
+    break;
+  case EState5:
+    if (timer) {
+      if (timer % 800 > 400) {
+        TheLedsBitmap = 0x0A05;
+      } else {
+        TheLedsBitmap = 0x0A00;
+      }
+    } else {
+      TheLedsBitmap = 0x0A50;
+      timer = 3000;
+      TheState = EState6;
+    }
+    break;
+  case EState6:
+    if (!timer) {
+      TheState = EStateOff;
+    }
+  default:
+    break;
+  }
+}
+
 ISR(TIMER0_OVF_vect)
 {
   const int factor = 1;
   static uint16_t n = 0;
   static uint16_t k = 0;
+
+  func();
+
   if (++k < factor) {
     return;
   }
@@ -62,7 +147,6 @@ ISR(TIMER0_OVF_vect)
   // update the index for the next ISR
   if (1000/factor < ++n) {
     n = 0;
-    TheLedsBitmap = ~TheLedsBitmap;
   }
 }
 
@@ -71,7 +155,7 @@ static void init_io(void)
   /* Output pins: PB0..PB3 */
   DDRB = 0x0F;
   PORTB = 0x0F;
- 
+
   /* Output pins: PD0..PD2 */
   DDRD  = 0x07;
   PORTD = 0x07;
