@@ -6,16 +6,24 @@
 #include <avr/eeprom.h>
 
 /*
- * HW configuration:
+ * HW configuration 1 (LEDs):
  * Connector pin | LED-IDs  | IC Pin# | Pin name | Comment
  * =======================================================
- *             1 | South  + |      12 |      PB0 |
- *             2 | East   + |      13 |      PB1 |
- *             3 | Noth   + |      14 |      PB2 |
- *             4 | West   + |      15 |      PB3 |
- *             5 | Yellow - |       3 |      PD1 |
- *             6 | Red    - |       6 |      PD2 |
- *             7 | Green  - |       2 |      PD0 |
+ *             1 | South  + |      12 |      PB0 | White-orange wire
+ *             2 | East   + |      13 |      PB1 | Orange wire
+ *             3 | Noth   + |      14 |      PB2 | White-green wire
+ *             4 | West   + |      15 |      PB3 | Green wire
+ *             5 | Yellow - |       3 |      PD1 | White-brown wire
+ *             6 | Red    - |       6 |      PD2 | Brown wire
+ *             7 | Green  - |       2 |      PD0 | Blue wire
+ */
+
+/*
+ * HW configuration 2 (power management):
+ * IC pin | Pin name | Connected to | Comment
+ * =======================================================
+ *     16 |      PB4 |   POWER LED+ | OUT
+ *      7 |      PD3 | POWER BUTTON | IN/PULL UP
  */
 
 /*
@@ -27,8 +35,22 @@
  * TheLedsBitmap[0]: Bits: 00..03: Green;
  * TheLedsBitmap[1]: Bits: 04..07: Yellow;
  * TheLedsBitmap[2]: Bits: 08..11: Red;
+ * TheLedsBitmap[3]: Bit :     12: Power LED
  */
-volatile static uint16_t TheLedsBitmap = 0x0A05;
+volatile static uint16_t TheLedsBitmap = 0x0000U;
+volatile static  uint8_t ThePowerLed = 0;
+
+typedef enum {
+  EPwrReqNone,
+  EPwrReqPowerButtonPressed,
+  EPwrReqPowerButtonPressedLong,
+  EPwrReqPowerButtonConfirmed,
+  EPwrReqPowerButtonReleased,
+  EPwrReqPowerDown,
+  EPwrReqPowerUp
+} TPwrReq;
+
+volatile static uint8_t ThePowerRequest = EPwrReqNone;
 
 typedef enum {
   EStateOff,
@@ -107,13 +129,69 @@ static void func(void) {
   }
 }
 
+static void power_man(void)
+{
+  static uint16_t counter = 0;
+  const uint8_t powerButton = !(PIND & 0x08U);
+
+  switch (ThePowerRequest) {
+  case EPwrReqNone:
+    if (powerButton) {
+      counter = 4000;
+      ThePowerRequest = EPwrReqPowerButtonPressed;
+    } else {
+      ThePowerLed = 0;
+    }
+    break;
+  case EPwrReqPowerButtonPressed:
+    if (powerButton) {
+      if (!counter--) {
+        ThePowerLed = 1;
+        ThePowerRequest = EPwrReqPowerButtonPressedLong;
+      }
+    } else {
+      ThePowerRequest = EPwrReqNone;
+    }
+    break;
+  case EPwrReqPowerButtonPressedLong:
+    if (!powerButton) {
+      counter = 4000;
+      ThePowerRequest = EPwrReqPowerButtonReleased;
+    }
+    break;
+  case EPwrReqPowerButtonReleased:
+    if (!powerButton) {
+      if (!counter--) {
+        ThePowerLed = 0;
+        TheLedsBitmap = 0x0000U;
+        ThePowerRequest = EPwrReqPowerDown;
+      }
+    } else {
+      ThePowerRequest = EPwrReqNone;
+    }
+    break;
+  case EPwrReqPowerUp:
+    if (!powerButton) {
+      ThePowerLed = 0;
+      ThePowerRequest = EPwrReqNone;
+    }
+    break;
+  default:
+  case EPwrReqPowerDown:
+    break;
+  }
+}
+
 ISR(TIMER0_OVF_vect)
 {
   const int factor = 1;
   static uint16_t n = 0;
   static uint16_t k = 0;
 
-  func();
+  if (EPwrReqPowerDown != ThePowerRequest) {
+    func();
+  }
+  power_man();
 
   if (++k < factor) {
     return;
@@ -121,7 +199,8 @@ ISR(TIMER0_OVF_vect)
   k = 0;
 
   const int ledIndex = (n % 4);
-  const uint8_t ledBitmap = ((TheLedsBitmap >> (ledIndex << 2)) & 0x0FU);
+  const uint8_t ledBitmap = ((TheLedsBitmap >> (ledIndex << 2)) & 0x0FU) |
+                            (ThePowerLed ? 0x10U : 0x00U);
   switch (ledIndex) {
   case 0:
     PORTB = 0x00;
@@ -150,15 +229,32 @@ ISR(TIMER0_OVF_vect)
   }
 }
 
+ISR(INT1_vect)
+{
+  /* disable INT1 interrupt */
+  GIMSK &= ~(1U << INT1);
+  set_sleep_mode (SLEEP_MODE_IDLE);
+  sleep_disable ();
+  ThePowerLed = 1;
+  ThePowerRequest = EPwrReqPowerUp;
+  TheState = EStateOff;
+}
+
 static void init_io(void)
 {
   /* Output pins: PB0..PB3 */
-  DDRB = 0x0F;
-  PORTB = 0x0F;
+  DDRB = 0x1F;
+  PORTB = 0x1F;
 
-  /* Output pins: PD0..PD2 */
+  /* Output pins: PD0..PD2, PD3: enable pull-ups */
   DDRD  = 0x07;
-  PORTD = 0x07;
+  PORTD = 0x0F;
+}
+
+static void init_int1(void)
+{
+  /* disable interrupt on INT1 pin */
+  GIMSK &= ~(1U << INT1);
 }
 
 // *************************************************************************************************
@@ -174,13 +270,32 @@ static void init_timer_0(void)
 int main (void)
 {
   init_io ();
+  init_int1 ();
   init_timer_0 ();
 
   /* Enable interrupts */
   sei();
 
-  for(;;)
-  {
+  for(;;) {
+    switch (ThePowerRequest) {
+    case EPwrReqPowerUp:
+      ThePowerLed = 1;
+      break;
+    case EPwrReqPowerDown:
+      /* turn off all the LEDs */
+      PORTB = 0;
+      /* enable external interrupt */
+      GIMSK |= (1U << INT1);
+      /* clear SM0, SM1 and SE flags */
+      set_sleep_mode (SLEEP_MODE_PWR_DOWN);
+      sleep_enable ();
+      ThePowerRequest = EPwrReqNone;
+      sleep_cpu();
+      break;
+    default:
+      break;
+    }
+
     sleep_mode();
   }
 
